@@ -1,0 +1,1 @@
+.viewer-body{display:flex;flex-direction:column;height:100dvh;min-height:0;overflow:hidden}.viewer-body .source-header,.viewer-body .source-footer{flex:none}.viewer-body .vnc-screen{height:auto;min-height:0;flex:1;overflow:hidden}.viewer-body .source-header{border-bottom:1px solid #303030}

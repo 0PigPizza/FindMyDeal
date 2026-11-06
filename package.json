@@ -1,0 +1,18 @@
+{
+  "name": "findmydeal",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Save marketplace deal monitor configurations",
+  "main": "server.js",
+  "scripts": {
+    "start": "bash scripts/start.sh"
+  },
+  "dependencies": {
+    "@novnc/novnc": "^1.7.0",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "mariadb": "^3.5.2",
+    "sharp": "^0.35.5",
+    "ws": "^8.22.1"
+  }
+}
