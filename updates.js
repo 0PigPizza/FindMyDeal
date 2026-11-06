@@ -70,4 +70,20 @@ function createUpdater({root = __dirname, repository = REPOSITORY, restart = () 
   function getStatus() { return {...status, enabled: enabled()}; }
   return {check, getStatus, setEnabled};
 }
-module.exports = {createUpdater, REPOSITORY};
+function createContainerUpdater({version = process.env.FMD_RELEASE || '', fetchRelease = fetch} = {}) {
+  let status = {state:'idle', enabled:false, container:true, message:'Container updates are installed from GitHub Releases.', checkedAt:null};
+  return {
+    getStatus: () => status,
+    setEnabled: () => { throw Error('Container updates must be installed from a release.'); },
+    check: async () => {
+      try {
+        const response = await fetchRelease('https://api.github.com/repos/0PigPizza/FindMyDeal/releases/latest', {headers:{'Accept':'application/vnd.github+json'}, signal:AbortSignal.timeout(10000)});
+        if (!response.ok) throw Error(`GitHub returned HTTP ${response.status}.`);
+        const release = await response.json();
+        status = {...status, state:release.tag_name===version?'current':'available', message:release.tag_name===version?'This container is up to date.':`Release ${release.tag_name} is available. Download and load its container images, then restart Compose.`, checkedAt:new Date().toISOString()};
+      } catch (e) { status = {...status, state:'error', message:`Update check failed: ${e.message}`, checkedAt:new Date().toISOString()}; }
+      return status;
+    }
+  };
+}
+module.exports = {createUpdater, createContainerUpdater, REPOSITORY};

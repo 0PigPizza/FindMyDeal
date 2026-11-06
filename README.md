@@ -19,3 +19,18 @@ Alerts can send newly AI-approved deals to Discord or Telegram while the app is 
 The Updates page checks the `main` branch of the public [FindMyDeal repository](https://github.com/0PigPizza/FindMyDeal). Checks run shortly after startup and every six hours while the app is running; you can also check immediately from the page. Automatic installation is enabled by default and can be turned off there. The setting is kept in `.data/`.
 
 When an update is available, the app only fast-forwards a clean `main` checkout whose `origin` points to the project repository. It installs the locked Node dependencies and restarts the app when launched with `npm start`. Local modifications, untracked files, a different branch or divergent history prevent automatic installation. Commit or move local changes, or update manually. If dependency installation fails, the app reports the error and retries on a later check; inspect the console and run `npm ci` if necessary. Project-local data in `.data/` is not part of the update.
+
+## Docker release
+
+Download `findmydeal-images-linux-amd64.tar.gz`, `compose.yaml`, and `env.example` from the [latest release](https://github.com/0PigPizza/FindMyDeal/releases/latest). These images are for Linux x86-64 hosts. In the download directory:
+
+```sh
+docker load -i findmydeal-images-linux-amd64.tar.gz
+cp env.example .env
+# Edit .env and set two different, long random passwords.
+docker compose up -d
+```
+
+Open http://localhost:3000. The bundled MariaDB has no published port; the app is published only on localhost. Named Docker volumes hold the database and the app's profiles and credentials across restarts. The application initializes its own schema on startup, so no separate SQL import is required. This Docker database is independent of a pre-existing `.data/mariadb` installation. Back up both volumes before changing releases; do not use `docker compose down -v` unless you intend to delete the data. Stop and back up the database consistently before copying its volume.
+
+For a new container release, download and load its images, then run `docker compose up -d --force-recreate`. Keep the existing `.env` and volumes. In a container, Updates checks for releases but does not replace its own running image. GitHub automatically includes source archive links on releases in addition to the supplied container files.

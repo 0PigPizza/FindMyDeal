@@ -5,7 +5,8 @@ const crypto = require('crypto');
 const { spawn, spawnSync } = require('child_process');
 const { WebSocketServer, WebSocket } = require('ws');
 const root = __dirname;
-const runtime = path.join(root, '.data/browser-runtime/usr');
+const runtime = process.env.FMD_BROWSER_RUNTIME || path.join(root, '.data/browser-runtime/usr');
+const firefoxPath = process.env.FMD_FIREFOX_PATH || path.join(runtime, 'lib/firefox/firefox');
 const sources = { kijiji: 'https://www.kijiji.ca/', ebay: 'https://www.ebay.ca/', facebook: 'https://www.facebook.com/' };
 const sessions = new Map();
 const monitorProfiles = new Set();
@@ -38,7 +39,7 @@ async function launch(id) {
 async function startBrowser(id) {
   let xvfb, vnc, firefox, auth;
   try {
-    for (const f of ['bin/Xvfb','bin/x11vnc','bin/xdotool','lib/firefox/firefox']) if (!fs.existsSync(path.join(runtime,f))) throw new Error('Firefox/VNC runtime is missing. See the README for setup.');
+    for (const f of [path.join(runtime,'bin/Xvfb'),path.join(runtime,'bin/x11vnc'),path.join(runtime,'bin/xdotool'),firefoxPath]) if (!fs.existsSync(f)) throw new Error('Firefox/VNC runtime is missing. See the README for setup.');
     const profile=path.join(root,'.data/profiles',id); fs.mkdirSync(profile,{recursive:true,mode:0o700});
     const userPrefs=path.join(profile,'user.js');
     const currentPrefs=fs.existsSync(userPrefs) ? fs.readFileSync(userPrefs,'utf8') : '';
@@ -54,7 +55,7 @@ async function startBrowser(id) {
     const port=await freePort(), password=crypto.randomBytes(4).toString('hex');
     vnc=spawn(`${runtime}/bin/x11vnc`,['-display',display,'-auth',auth,'-localhost','-rfbport',String(port),'-passwd',password,'-cursor','arrow','-forever','-shared','-quiet'],{env,stdio:'ignore'}); vnc.on('error',()=>{});
     await delay(700); if(vnc.exitCode!==null || !vnc.pid) throw new Error('Could not start VNC.');
-    firefox=spawn(`${runtime}/lib/firefox/firefox`,['--no-remote','--profile',profile,sources[id]],{env,stdio:'ignore'}); firefox.on('error',()=>{});
+    firefox=spawn(firefoxPath,['--no-remote','--profile',profile,sources[id]],{env,stdio:'ignore'}); firefox.on('error',()=>{});
     await delay(1200); if(firefox.exitCode!==null || !firefox.pid) throw new Error('Could not start Firefox.');
     for (let attempt=0; attempt<20; attempt++) {
       const found=spawnSync(`${runtime}/bin/xdotool`,['search','--onlyvisible','--class','firefox'],{env,encoding:'utf8'});

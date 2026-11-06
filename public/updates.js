@@ -3,6 +3,8 @@ const updateStatus = document.querySelector('#updateStatus');
 const checkUpdates = document.querySelector('#checkUpdates');
 function showUpdateStatus(data) {
   automaticUpdates.checked = data.enabled;
+  automaticUpdates.disabled = Boolean(data.container);
+  document.querySelector('#updateHint').textContent = data.container ? 'Container releases must be downloaded and restarted through Docker Compose.' : 'Checks at startup and every six hours. Updates restart the app and require a clean main branch.';
   updateStatus.textContent = data.message + (data.checkedAt ? ` Last checked: ${new Date(data.checkedAt).toLocaleString()}.` : '');
 }
 window.loadUpdates = async () => {

@@ -1,0 +1,63 @@
+name: Build release containers
+on:
+  release:
+    types: [published]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Run tests
+        run: |
+          npm ci
+          node --test tests/*.test.js
+          python3 -m unittest discover -s tests -p 'test_*.py'
+      - name: Build and load database image
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          docker build --build-arg "FMD_RELEASE=$RELEASE_TAG" -t findmydeal:latest .
+          docker pull mariadb:11.4
+      - name: Smoke test Compose and persistence
+        env:
+          DB_PASSWORD: ci-app-password
+          DB_ROOT_PASSWORD: ci-root-password
+        run: |
+          docker compose up -d --wait
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:3000/api/search-settings >/dev/null; then break; fi
+            sleep 2
+          done
+          curl -fsS -X PUT -H 'Content-Type: application/json' -d '{"delaySeconds":45}' http://127.0.0.1:3000/api/search-settings
+          docker compose restart app
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:3000/api/search-settings | grep -q '"delaySeconds":45'; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:3000/api/search-settings | grep -q '"delaySeconds":45'
+          curl -fsS -X POST http://127.0.0.1:3000/api/sources/ebay/open > /tmp/session.json
+          jq -e '.token and .password' /tmp/session.json
+          jq -c '{token}' /tmp/session.json | curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @- http://127.0.0.1:3000/api/sources/close
+      - name: Show container logs on failure
+        if: failure()
+        run: docker compose logs || true
+      - name: Package release files
+        run: |
+          mkdir -p release
+          docker save findmydeal:latest mariadb:11.4 | gzip > release/findmydeal-images-linux-amd64.tar.gz
+          cp compose.yaml release/compose.yaml
+          cp .env.docker.example release/env.example
+          cd release
+          sha256sum findmydeal-images-linux-amd64.tar.gz compose.yaml env.example > SHA256SUMS
+      - name: Attach files to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$RELEASE_TAG" release/* --clobber

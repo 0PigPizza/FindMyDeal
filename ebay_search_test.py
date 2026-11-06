@@ -23,10 +23,10 @@ from urllib.parse import quote, urlencode
 from facebook_search_test import WebDriver
 
 ROOT = pathlib.Path(__file__).resolve().parent
-RUNTIME = ROOT / '.data/browser-runtime/usr'
+RUNTIME = pathlib.Path(os.environ.get('FMD_BROWSER_RUNTIME', ROOT / '.data/browser-runtime/usr'))
 PROFILE = ROOT / '.data/profiles/ebay'
 DRIVER = RUNTIME / 'bin/geckodriver'
-FIREFOX = RUNTIME / 'lib/firefox/firefox'
+FIREFOX = pathlib.Path(os.environ.get('FMD_FIREFOX_PATH', RUNTIME / 'lib/firefox/firefox'))
 CONFIG = ROOT / 'ebay_test_config.json'
 SITE = 'https://www.ebay.ca'
 

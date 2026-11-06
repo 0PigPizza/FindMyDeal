@@ -1,0 +1,36 @@
+services:
+  app:
+    image: findmydeal:latest
+    pull_policy: never
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      DB_HOST: database
+      DB_USER: findmydeal
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      DB_NAME: findmydeal
+    volumes:
+      - app-data:/app/.data
+    depends_on:
+      database:
+        condition: service_healthy
+  database:
+    image: mariadb:11.4
+    pull_policy: never
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: findmydeal
+      MARIADB_USER: findmydeal
+      MARIADB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?Set DB_ROOT_PASSWORD in .env}
+    volumes:
+      - database-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+volumes:
+  app-data:
+  database-data:

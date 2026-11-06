@@ -18,10 +18,10 @@ import urllib.request
 from urllib.parse import urlencode
 
 ROOT = pathlib.Path(__file__).resolve().parent
-RUNTIME = ROOT / '.data/browser-runtime/usr'
+RUNTIME = pathlib.Path(os.environ.get('FMD_BROWSER_RUNTIME', ROOT / '.data/browser-runtime/usr'))
 PROFILE = ROOT / '.data/profiles/facebook'
 DRIVER = RUNTIME / 'bin/geckodriver'
-FIREFOX = RUNTIME / 'lib/firefox/firefox'
+FIREFOX = pathlib.Path(os.environ.get('FMD_FIREFOX_PATH', RUNTIME / 'lib/firefox/firefox'))
 CONFIG = ROOT / 'facebook_test_config.json'
 DISTANCES = (1, 2, 5, 10, 20, 40, 60, 80, 100, 250, 500)
 
