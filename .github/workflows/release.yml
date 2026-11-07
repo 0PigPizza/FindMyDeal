@@ -24,6 +24,8 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           docker build --build-arg "FMD_RELEASE=$RELEASE_TAG" -t findmydeal:latest .
+          docker run --rm --entrypoint python3 findmydeal:latest -B -c "import facebook_search_test, ebay_search_test, kijiji_search_test"
+          docker run --rm --network none findmydeal:latest python3 -B tests/image-browser-smoke.py
           docker pull mariadb:11.4
       - name: Smoke test Compose and persistence
         env:

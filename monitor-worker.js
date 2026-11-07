@@ -116,17 +116,21 @@ function start(pool, profiles, options={}) {
         let chosen; try { chosen=JSON.parse(monitor.marketplaces); } catch { continue; }
         for(const name of chosen) if(names[name]) await pool.query('INSERT IGNORE INTO monitor_runs (monitor_id,source) VALUES (?,?)',[monitor.id,names[name]]);
       }
-      const schedules=await pool.query("SELECT q.source,CASE WHEN q.source='ebay' AND q.consecutive_403>0 AND q.blocked_until IS NOT NULL THEN GREATEST(0,COALESCE(TIMESTAMPDIFF(MICROSECOND,NOW(3),q.blocked_until),0)) ELSE GREATEST(COALESCE(TIMESTAMPDIFF(MICROSECOND,NOW(3),DATE_ADD(q.last_finished,INTERVAL s.delay_seconds SECOND)),0),COALESCE(TIMESTAMPDIFF(MICROSECOND,NOW(3),q.blocked_until),0)) END AS wait_us FROM search_source_schedule q JOIN search_settings s ON s.id=1");
+      const schedules=await pool.query("SELECT q.source,CASE WHEN q.source='ebay' AND q.consecutive_403>0 AND q.blocked_until IS NOT NULL THEN GREATEST(0,COALESCE(TIMESTAMPDIFF(MICROSECOND,NOW(3),q.blocked_until),0)) ELSE GREATEST(COALESCE(TIMESTAMPDIFF(MICROSECOND,NOW(3),DATE_ADD(q.last_finished,INTERVAL s.delay_seconds SECOND)),0),COALESCE(TIMESTAMPDIFF(MICROSECOND,NOW(3),q.blocked_until),0)) END AS wait_us,GREATEST(0,COALESCE(TIMESTAMPDIFF(MICROSECOND,NOW(3),q.blocked_until),0)) AS blocked_us FROM search_source_schedule q JOIN search_settings s ON s.id=1");
       const due=await pool.query("SELECT m.*,r.source,r.last_checked,r.schedule_pass AS source_pass FROM monitor_runs r JOIN monitors m ON m.id=r.monitor_id WHERE m.enabled=1 AND r.next_run<=NOW() ORDER BY r.next_run,r.monitor_id");
       for(const schedule of schedules){
-        const source=schedule.source;if(stopped || active.has(source) || schedule.wait_us>0)continue;
+        const source=schedule.source;if(stopped || active.has(source))continue;
         const candidates=due.filter(row=>row.source===source).map(row=>({...row,schedule_pass:row.source_pass}));
         const next=chooseNext(candidates);if(!next)continue;
+        // A newly enabled sole monitor gets its first turn immediately. Marketplace
+        // blocks still apply; subsequent turns follow the normal source delay.
+        const firstSoleTurn=monitors.filter(row=>Number(row.enabled)===1).length===1 && next.row.source_pass==null && Number(schedule.blocked_us || 0)===0;
+        if(Number(schedule.wait_us)>0 && !firstSoleTurn)continue;
         const monitor=next.row,job={id:Number(monitor.id),revision:Number(monitor.revision),cancelled:false,child:null};
         active.set(source,job);
         try{await pool.query('UPDATE monitor_runs SET schedule_pass=? WHERE monitor_id=? AND source=?',[next.pass,monitor.id,source]);}
         catch(e){active.delete(source);throw e;}
-        runJob(monitor,source,job).catch(e=>{if(!stopped)console.error('Monitor worker:',e.message);}).finally(async()=>{try{await pool.query('UPDATE search_source_schedule SET last_finished=NOW(3) WHERE source=?',[source]);}catch(e){if(!stopped)console.error('Search scheduler:',e.message);}finally{if(active.get(source)===job)active.delete(source);}});
+        runJob(monitor,source,job).catch(e=>{if(!stopped)console.error('Monitor worker:',e.message);}).finally(()=>{if(active.get(source)===job)active.delete(source);});
       }
     } catch(e) { if(!stopped) console.error('Monitor worker:',e.message); }
     finally { polling=false; if(!stopped) timer=setTimeout(tick,1000); }
@@ -139,6 +143,8 @@ function start(pool, profiles, options={}) {
         if(!connected(source)) { await finish(monitor,source,'error','Connect this source in Sources before monitoring.'); return; }
         const changed=await pool.query("UPDATE monitor_runs SET status='searching',error=NULL WHERE monitor_id=? AND source=? AND EXISTS (SELECT 1 FROM monitors WHERE id=? AND enabled=1 AND revision=?)",[monitor.id,source,monitor.id,job.revision]);
         if(!changed.affectedRows || job.cancelled || stopped) return;
+        const scheduled=await pool.query('UPDATE search_source_schedule SET last_finished=NOW(3) WHERE source=? AND EXISTS (SELECT 1 FROM monitors WHERE id=? AND enabled=1 AND revision=?)',[source,monitor.id,job.revision]);
+        if(!scheduled.affectedRows || job.cancelled || stopped) return;
         if(source==='ebay'){
           const cached=await pool.query("SELECT d.id,d.url,d.price,d.ebay_summary_signature,TIMESTAMPDIFF(SECOND,d.ebay_details_checked,NOW()) AS age_seconds FROM deals d JOIN deal_matches dm ON dm.deal_id=d.id WHERE d.source='ebay' AND dm.monitor_id=? AND d.ebay_summary_signature IS NOT NULL AND d.ebay_details_checked IS NOT NULL",[monitor.id]);
           settings.cached_listings={};for(const row of cached){const id=listingId('ebay',row.url);if(id)settings.cached_listings[id]={id:Number(row.id),price:row.price,signature:row.ebay_summary_signature,age_seconds:Number(row.age_seconds)};}
@@ -153,7 +159,7 @@ function start(pool, profiles, options={}) {
             const ebayRetry=source==='ebay' && ebayBrowserFailure.test(e.message);
             const kijijiRetry=source==='kijiji' && kijijiBrowserFailure.test(e.message);
             if((!facebookRetry && !ebayRetry && !kijijiRetry) || attempt>0 || stopped || job.cancelled) throw e;
-            await new Promise(resolve=>setTimeout(resolve,ebayRetry || kijijiRetry?5000:1000));
+            await new Promise(resolve=>{const timer=setTimeout(()=>{job.wake=null;resolve();},ebayRetry || kijijiRetry?5000:1000);job.wake=()=>{clearTimeout(timer);job.wake=null;resolve();};});
             if(stopped || job.cancelled) return;
           }
         }
@@ -202,12 +208,13 @@ function start(pool, profiles, options={}) {
       retrySeconds=ebayBackoffSeconds(failures);
       error=error.replace(/Retrying in 5 minutes\./,`Retrying in ${retryTimeText(retrySeconds)}.`);
       await pool.query("UPDATE search_source_schedule SET consecutive_403=consecutive_403+1,blocked_until=DATE_ADD(NOW(3),INTERVAL ? SECOND) WHERE source='ebay'",[retrySeconds]);
+      await pool.query("UPDATE monitor_runs r JOIN monitors m ON m.id=r.monitor_id SET r.error=? WHERE r.source='ebay' AND m.enabled=1 AND r.monitor_id<>? AND r.error LIKE '%HTTP 403%'",[`eBay refused the request (HTTP 403). Retrying in ${retryTimeText(retrySeconds)}.`,monitor.id]);
     }else if(source==='ebay' && status==='ready')await pool.query("UPDATE search_source_schedule SET consecutive_403=0,blocked_until=NULL WHERE source='ebay'");
     else if(source==='facebook' && status==='ready')await pool.query("UPDATE search_source_schedule SET blocked_until=NULL WHERE source='facebook'");
     await pool.query('UPDATE monitor_runs SET status=?,error=?,last_checked=NOW(),next_run=DATE_ADD(NOW(),INTERVAL ? SECOND) WHERE monitor_id=? AND source=? AND EXISTS (SELECT 1 FROM monitors WHERE id=? AND enabled=1 AND revision=?)',[status,error,retrySeconds ?? 300,monitor.id,source,monitor.id,Number(monitor.revision)]);
   }
   timer=setTimeout(tick,1000);
-  function cancel(job) {job.cancelled=true;if(job.child && job.child.pid)try{process.kill(-job.child.pid,'SIGTERM');}catch{}}
+  function cancel(job) {job.cancelled=true;if(job.wake)job.wake();if(job.child && job.child.pid)try{process.kill(-job.child.pid,'SIGTERM');}catch{}}
   const stop=() => { stopped=true;clearTimeout(timer);for(const job of active.values())cancel(job); };
   stop.cancel=id=>{for(const job of active.values())if(job.id===Number(id))cancel(job);};
   return stop;

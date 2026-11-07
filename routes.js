@@ -40,9 +40,16 @@ app.patch('/api/monitors/:id/state', async (req,res) => {
   let connection;
   try {
     connection=await pool.getConnection();await connection.beginTransaction();
-    const result=await connection.query('UPDATE monitors SET enabled=?,schedule_pass=NULL,revision=revision+1 WHERE id=?',[req.body.enabled?1:0,req.params.id]);
-    if(!result.affectedRows){await connection.rollback();return res.status(404).json({error:'Monitor not found.'});}
+    const monitors=await connection.query('SELECT id,enabled FROM monitors ORDER BY id FOR UPDATE');
+    const current=monitors.find(m=>Number(m.id)===Number(req.params.id));
+    if(!current){await connection.rollback();return res.status(404).json({error:'Monitor not found.'});}
+    const wasEnabled=Number(current.enabled)===1;
+    const enabledBefore=monitors.filter(m=>Number(m.enabled)===1).length;
+    await connection.query('UPDATE monitors SET enabled=?,schedule_pass=NULL,revision=revision+1 WHERE id=?',[req.body.enabled?1:0,req.params.id]);
     await connection.query('UPDATE monitor_runs SET status=?,error=NULL,next_run=NOW(),schedule_pass=NULL WHERE monitor_id=?',[req.body.enabled?'waiting':'paused',req.params.id]);
+    if(wasEnabled!==req.body.enabled && (enabledBefore===0 || (enabledBefore===1 && wasEnabled && !req.body.enabled))) {
+      await connection.query('UPDATE search_source_schedule SET last_finished=NULL');
+    }
     await connection.commit();getWorker().cancel(req.params.id);res.json({ok:true});
   } catch(e) { if(connection) await connection.rollback().catch(()=>{});console.error(e);res.status(503).json({error:'Could not change monitor state.'}); }
   finally { if(connection) connection.release(); }
@@ -92,6 +99,14 @@ app.get('/api/deals', async (req,res) => {
     res.json([...unique.values()]);
   }catch(e){console.error(e);res.status(503).json({error:'Could not load listings.'});}
 });
-app.get('/api/monitor-status', async (req,res) => { try { res.json(await pool.query('SELECT monitor_id,source,status,last_checked,next_run,error FROM monitor_runs ORDER BY monitor_id,source')); } catch(e) { res.status(503).json({error:'Could not load monitor status.'}); } });
+app.get('/api/monitor-status', async (req,res) => { try {
+  const rows=await pool.query(`SELECT r.monitor_id,r.source,r.status,r.last_checked,r.next_run AS monitor_due,
+    q.blocked_until AS source_blocked_until,
+    CASE WHEN m.enabled=1 AND r.schedule_pass IS NULL AND (SELECT COUNT(*) FROM monitors WHERE enabled=1)=1 AND (q.blocked_until IS NULL OR q.blocked_until<=NOW(3)) THEN r.next_run
+    ELSE GREATEST(r.next_run,COALESCE(q.blocked_until,r.next_run),COALESCE(CASE WHEN q.source='ebay' AND q.consecutive_403>0 AND q.blocked_until IS NOT NULL THEN NULL ELSE DATE_ADD(q.last_finished,INTERVAL s.delay_seconds SECOND) END,r.next_run)) END AS next_run,
+    r.error FROM monitor_runs r JOIN monitors m ON m.id=r.monitor_id JOIN search_source_schedule q ON q.source=r.source JOIN search_settings s ON s.id=1 ORDER BY r.monitor_id,r.source`);
+  for(const row of rows) if(row.source_blocked_until && /Retrying in .*?\./i.test(row.error||'')) row.error=row.error.replace(/Retrying in .*?\./i,'Retry scheduled after the source block expires.');
+  res.json(rows);
+} catch(e) { res.status(503).json({error:'Could not load monitor status.'}); } });
 app.delete('/api/monitors/:id', async (req,res) => { if(!/^\d+$/.test(req.params.id)) return res.status(400).json({error:'Invalid monitor ID.'}); try { const result=await pool.query('DELETE FROM monitors WHERE id = ?', [req.params.id]); if(!result.affectedRows) return res.status(404).json({error:'Monitor not found.'}); getWorker().cancel(req.params.id); res.status(204).end(); } catch(e) { console.error(e); res.status(503).json({error:'Could not delete monitor.'}); }});
 };

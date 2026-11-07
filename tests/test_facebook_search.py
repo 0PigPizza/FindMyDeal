@@ -57,3 +57,35 @@ class FacebookPartialTests(unittest.TestCase):
         self.assertEqual(len(results),1);self.assertTrue(warning);self.assertCountEqual(d.opened,d.closed)
 
 if __name__=='__main__':unittest.main()
+
+class WebDriverDeadlineTests(unittest.TestCase):
+    def test_stalled_protocol_request_obeys_wait_deadline(self):
+        import http.server, threading, time
+        from facebook_search_test import WebDriver
+        class Stall(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                time.sleep(2)
+            def log_message(self, *args): pass
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Stall)
+        server.daemon_threads = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            driver = WebDriver('http://127.0.0.1:%s' % server.server_port)
+            start = time.monotonic()
+            with self.assertRaises((TimeoutError, OSError)):
+                driver.wait_for('return true;', timeout=.3)
+            self.assertLess(time.monotonic() - start, 1.2)
+            self.assertEqual(driver.request_timeout, 90)
+        finally:
+            server.shutdown(); server.server_close()
+
+class FacebookRadiusCompatibilityTests(unittest.TestCase):
+    def test_missing_radius_reports_visible_options(self):
+        class Driver:
+            def wait_for(self, *args, **kwargs): return {'element': 'fixture'}
+            def click(self, element): pass
+            def execute(self, *args): return ['10 kilometers', '20 kilometers']
+        with patch.object(facebook.time, 'monotonic', side_effect=[0, 11]):
+            with self.assertRaisesRegex(RuntimeError, '50 km radius.*10 kilometers'):
+                facebook.apply_location(Driver(), '', 50)

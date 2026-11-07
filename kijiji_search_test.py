@@ -128,6 +128,29 @@ def _apply_location_once(driver, city, radius):
         driver.navigate(url)
 
 
+# Accept a canonical redirect and results visible before slow subresources finish.
+SEARCH_STATE = r'''const current=new URL(location.href), expected=new URL(arguments[0]);
+const kijijiHost=h=>h==='kijiji.ca' || h==='www.kijiji.ca';
+const allowed=current.origin===expected.origin || (expected.protocol==='https:' && current.protocol==='https:' && kijijiHost(expected.hostname) && kijijiHost(current.hostname));
+if (!allowed || performance.timeOrigin === arguments[1]) return null;
+const text=document.body?.innerText || '';
+if (/verify (?:you are|you're) human|captcha|access denied|temporarily blocked/i.test(text)) return {blocked:true};
+if ((arguments[2] && !current.searchParams.has('ll')) ||
+    (arguments[2] && arguments[3] !== null && current.searchParams.get('radius') !== String(arguments[3]))) return null;
+const links=[...document.querySelectorAll('h3 a[data-testid="listing-link"]')]
+  .map(a=>a.href.split('?')[0]).filter((url,i,urls)=>urls.indexOf(url)===i);
+if (links.length) return {links};
+if (/\bNo results for\b/i.test(text)) return {links:[]};
+return null;'''
+
+def wait_search(driver, url, previous, location_required=False, radius=None):
+    result=driver.wait_for(SEARCH_STATE, timeout=30, args=(url, previous, location_required, radius))
+    if result and result.get('blocked'):
+        raise RuntimeError('Kijiji requires verification or has blocked access. Check the Kijiji source browser.')
+    if result is None:
+        raise RuntimeError('Could not load Kijiji search results. Check whether Kijiji requires sign-in or verification.')
+    return result
+
 def apply_location(driver, city, radius):
     for attempt in range(2):
         try:return _apply_location_once(driver,city,radius)
@@ -191,19 +214,11 @@ def main():
                 if not regional: raise RuntimeError('Set a location in Sources → Kijiji before using a distance.')
                 params.update({'ll':regional['ll'],'address':regional['address'],'radius':radius})
                 url=f'https://www.kijiji.ca/{regional["area"]}/{query}/{regional["suffix"]}?' + urlencode(params)
+        previous = driver.execute('return performance.timeOrigin;')
         driver.navigate(url)
-        loaded = driver.wait_for('return location.pathname === new URL(arguments[0]).pathname && document.readyState === "complete" ? true : null;', timeout=30, args=(url,))
-        if not loaded: raise RuntimeError('Kijiji search did not finish loading.')
+        wait_search(driver, url, previous)
         apply_location(driver, city, radius)
-        search_result = driver.wait_for(r'''const current=new URL(location.href);
-            if (document.readyState !== 'complete' || (arguments[0] && !current.searchParams.has('ll')) ||
-                (arguments[0] && arguments[1] !== null && current.searchParams.get('radius') !== String(arguments[1]))) return null;
-            const links=[...document.querySelectorAll('h3 a[data-testid="listing-link"]')]
-                .map(a=>a.href.split('?')[0]).filter((url,i,urls)=>urls.indexOf(url)===i);
-            if (links.length) return {links};
-            if (/\bNo results for\b/i.test(document.body?.innerText || '')) return {links:[]};
-            return null;''', timeout=30, args=(bool(city or regional), radius))
-        if search_result is None: raise RuntimeError('Could not load Kijiji search results. Check whether Kijiji requires sign-in or verification.')
+        search_result = wait_search(driver, url, previous, bool(city or regional), radius)
         links = search_result['links']
         if not links:
             print('[]')

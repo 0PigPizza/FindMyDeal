@@ -10,6 +10,8 @@ import fcntl
 import os
 import pathlib
 import socket
+import signal
+import threading
 import subprocess
 import sys
 import time
@@ -62,12 +64,35 @@ class WebDriver:
 
     def wait_for(self, script, timeout=25, args=()):
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            value = self.execute(script, *args)
-            if value:
-                return value
-            time.sleep(.25)
-        return None
+        previous_timeout = self.request_timeout
+        # A socket timeout alone can be extended indefinitely by partial responses.
+        # The worker runs on Linux; a real timer also interrupts a stalled read.
+        use_alarm = threading.current_thread() is threading.main_thread()
+        old_handler = signal.getsignal(signal.SIGALRM) if use_alarm else None
+        old_timer = signal.getitimer(signal.ITIMER_REAL) if use_alarm else None
+        def expired(signum, frame):
+            raise TimeoutError('WebDriver page wait deadline exceeded')
+        if use_alarm:
+            signal.signal(signal.SIGALRM, expired)
+        try:
+            while (remaining := deadline - time.monotonic()) > 0:
+                self.request_timeout = min(previous_timeout, remaining)
+                if use_alarm: signal.setitimer(signal.ITIMER_REAL, remaining)
+                try:
+                    value = self.execute(script, *args)
+                finally:
+                    if use_alarm: signal.setitimer(signal.ITIMER_REAL, 0)
+                if value:
+                    return value
+                time.sleep(min(.25, max(0, deadline - time.monotonic())))
+            return None
+        finally:
+            self.request_timeout = previous_timeout
+            if use_alarm:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+                signal.signal(signal.SIGALRM, old_handler)
+                if old_timer[0]:
+                    signal.setitimer(signal.ITIMER_REAL, max(.000001, old_timer[0] - (timeout - max(0, deadline - time.monotonic()))), old_timer[1])
 
 SEARCH_LINKS = r'''return [...document.querySelectorAll('a[href*="/marketplace/item/"]')]
   .map(a => { let match = a.href.match(/\/marketplace\/item\/(\d+)/); return match && `https://www.facebook.com/marketplace/item/${match[1]}/`; })
@@ -173,7 +198,9 @@ def apply_location(driver, location, distance):
         while time.monotonic()<deadline and not option:
             option=driver.execute(option_script,distance)
             if not option: time.sleep(.5)
-        if not option: raise RuntimeError(f'Facebook did not offer the requested {distance} km radius. Visible options: {driver.execute("return [...document.querySelectorAll(\"[role=option]\")].filter(e=>e.getClientRects().length).map(e=>e.innerText);")}')
+        if not option:
+            visible_options = driver.execute("return [...document.querySelectorAll('[role=option]')].filter(e=>e.getClientRects().length).map(e=>e.innerText);")
+            raise RuntimeError(f'Facebook did not offer the requested {distance} km radius. Visible options: {visible_options}')
         driver.click(option)
     apply=driver.wait_for("return [...arguments[0].querySelectorAll('[role=button],button')].find(e=>e.getClientRects().length && e.innerText.trim()==='Apply' && e.getAttribute('aria-disabled')!=='true') || null;", args=(dialog,))
     if not apply: raise RuntimeError('Facebook did not accept the location or radius.')
