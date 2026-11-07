@@ -14,6 +14,7 @@ app.use(express.static('public'));
 
 let stopWorker=Object.assign(()=>{}, {cancel:()=>{}}),stopAi=()=>{};
 require('./routes')(app, {pool, worker, ai, alerts, dealFilters, getWorker:()=>stopWorker});
+require('./instant')(app, {worker, ai, profiles:sources, getWorker:()=>stopWorker});
 const server = require('http').createServer(app);
 sources(app, server);
 app.get('/api/updates', (req,res)=>res.json(updater.getStatus()));

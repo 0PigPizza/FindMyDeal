@@ -105,10 +105,10 @@ async function init(pool) {
 function start(pool, profiles, options={}) {
   const search = options.search || runScript;
   const connected = options.connected || (source => { const check=spawnSync('python3',[path.join(root,'scripts',`${source}-session.py`),path.join(root,'.data/profiles',source)],{encoding:'utf8',timeout:3000}); return check.status===0 && check.stdout.trim()==='yes'; });
-  let timer, stopped=false, polling=false;
+  let timer, stopped=false, polling=false, paused=false;
   const active=new Map();
   async function tick() {
-    if (stopped || polling) return;
+    if (stopped || paused || polling) return;
     polling=true;
     try {
       const monitors=await pool.query('SELECT * FROM monitors ORDER BY id');
@@ -119,7 +119,7 @@ function start(pool, profiles, options={}) {
       const schedules=await pool.query("SELECT q.source,CASE WHEN q.source='ebay' AND q.consecutive_403>0 AND q.blocked_until IS NOT NULL THEN GREATEST(0,COALESCE(TIMESTAMPDIFF(MICROSECOND,NOW(3),q.blocked_until),0)) ELSE GREATEST(COALESCE(TIMESTAMPDIFF(MICROSECOND,NOW(3),DATE_ADD(q.last_finished,INTERVAL s.delay_seconds SECOND)),0),COALESCE(TIMESTAMPDIFF(MICROSECOND,NOW(3),q.blocked_until),0)) END AS wait_us,GREATEST(0,COALESCE(TIMESTAMPDIFF(MICROSECOND,NOW(3),q.blocked_until),0)) AS blocked_us FROM search_source_schedule q JOIN search_settings s ON s.id=1");
       const due=await pool.query("SELECT m.*,r.source,r.last_checked,r.schedule_pass AS source_pass FROM monitor_runs r JOIN monitors m ON m.id=r.monitor_id WHERE m.enabled=1 AND r.next_run<=NOW() ORDER BY r.next_run,r.monitor_id");
       for(const schedule of schedules){
-        const source=schedule.source;if(stopped || active.has(source))continue;
+        const source=schedule.source;if(stopped || paused || active.has(source))continue;
         const candidates=due.filter(row=>row.source===source).map(row=>({...row,schedule_pass:row.source_pass}));
         const next=chooseNext(candidates);if(!next)continue;
         // A newly enabled sole monitor gets its first turn immediately. Marketplace
@@ -216,7 +216,9 @@ function start(pool, profiles, options={}) {
   timer=setTimeout(tick,1000);
   function cancel(job) {job.cancelled=true;if(job.wake)job.wake();if(job.child && job.child.pid)try{process.kill(-job.child.pid,'SIGTERM');}catch{}}
   const stop=() => { stopped=true;clearTimeout(timer);for(const job of active.values())cancel(job); };
+  stop.pause=async()=>{paused=true;for(const job of active.values())cancel(job);while(polling || active.size)await new Promise(resolve=>setTimeout(resolve,100));};
+  stop.resume=()=>{paused=false;clearTimeout(timer);if(!stopped)timer=setTimeout(tick,0);};
   stop.cancel=id=>{for(const job of active.values())if(job.id===Number(id))cancel(job);};
   return stop;
 }
-module.exports={init,start,validateMonitor,runScript,chooseNext,failureMessage,ebayBackoffSeconds,retryTimeText,stopProcessGroup};
+module.exports={init,start,validateMonitor,settingsFor,runScript,chooseNext,failureMessage,ebayBackoffSeconds,retryTimeText,stopProcessGroup};
