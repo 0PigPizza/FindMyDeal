@@ -49,3 +49,14 @@ test('failed dependency installation is retried before restart', async t => {
   assert.equal((await updater.check()).state,'restarting');
   assert.equal(attempts,2); assert.equal(restarts,1);
 });
+test('manual installation works when automatic updates are disabled and only after checking', async t=>{
+ const f=fixture();t.after(()=>fs.rmSync(f.root,{recursive:true,force:true}));let restarted=0;
+ const updater=createUpdater({root:f.checkout,repository:f.remote,supervised:true,run:async(p,a,o)=>p==='npm'?{stdout:''}:runFile(p,a,o),restart:()=>restarted++});
+ updater.setEnabled(false);assert.equal((await updater.install()).state,'idle');assert.equal((await updater.check({install:false})).state,'available');assert.equal((await updater.install()).state,'restarting');assert.equal(restarted,1);
+});
+test('container update requires an available release and live host helper', async t=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'fmd-control-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+ const updater=require('../updates').createContainerUpdater({version:'v1.0.0',controlDir:root,fetchRelease:async()=>({ok:true,json:async()=>({tag_name:'v1.1.0'})})});
+ assert.equal((await updater.install()).state,'idle');assert.equal((await updater.check()).state,'available');assert.equal((await updater.install()).state,'available');
+ fs.writeFileSync(path.join(root,'heartbeat'),'');assert.equal((await updater.install()).state,'installing');assert.equal(fs.existsSync(path.join(root,'request')),true);
+});

@@ -18,7 +18,8 @@ require('./instant')(app, {worker, ai, profiles:sources, getWorker:()=>stopWorke
 const server = require('http').createServer(app);
 sources(app, server);
 app.get('/api/updates', (req,res)=>res.json(updater.getStatus()));
-app.post('/api/updates/check', async (req,res)=>res.json(await updater.check()));
+app.post('/api/updates/check', async (req,res)=>res.json(await updater.check({install:false})));
+app.post('/api/updates/install', async (req,res)=>res.json(await updater.install()));
 app.put('/api/updates', (req,res)=>{if(typeof req.body?.enabled!=='boolean')return res.status(400).json({error:'Invalid update setting.'});try{updater.setEnabled(req.body.enabled);res.json(updater.getStatus());}catch(e){res.status(503).json({error:'Could not save update setting.'});}});
 database.init(pool).then(()=>worker.init(pool)).then(()=>ai.init(pool)).then(()=>server.listen(Number(process.env.PORT || 3000), process.env.HOST || '127.0.0.1', ()=>{stopWorker=worker.start(pool,sources);stopAi=ai.start(pool);console.log(`FindMyDeal running at http://localhost:${process.env.PORT || 3000}`);setTimeout(()=>updater.check(),10000).unref();setInterval(()=>updater.check(),6*60*60*1000).unref()})).catch(e=>{console.error('MariaDB initialization failed:', e.message); process.exit(1);});
 
