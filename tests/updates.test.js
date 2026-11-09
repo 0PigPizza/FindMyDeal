@@ -56,7 +56,13 @@ test('manual installation works when automatic updates are disabled and only aft
 });
 test('container update requires an available release and live host helper', async t=>{
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'fmd-control-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
- const updater=require('../updates').createContainerUpdater({version:'v1.0.0',controlDir:root,fetchRelease:async()=>({ok:true,json:async()=>({tag_name:'v1.1.0'})})});
+ const updater=require('../updates').createContainerUpdater({version:'v1.0.0',controlDir:root,fetchRelease:async()=>({ok:true,json:async()=>({tag_name:'v1.1.0',assets:[{name:'SHA256SUMS',state:'uploaded'},{name:'findmydeal-images-linux-amd64.tar.gz',state:'uploaded'}]})})});
  assert.equal((await updater.install()).state,'idle');assert.equal((await updater.check()).state,'available');assert.equal((await updater.install()).state,'available');
  fs.writeFileSync(path.join(root,'heartbeat'),'');assert.equal((await updater.install()).state,'installing');assert.equal(fs.existsSync(path.join(root,'request')),true);
+});
+
+test('container updates wait until both release files are uploaded', async t=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'fmd-control-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+ const updater=require('../updates').createContainerUpdater({version:'v1.0.0',controlDir:root,fetchRelease:async()=>({ok:true,json:async()=>({tag_name:'v1.1.0',assets:[]})})});
+ const result=await updater.check();assert.equal(result.state,'error');assert.match(result.message,/still being prepared/);assert.equal((await updater.install()).state,'error');
 });
