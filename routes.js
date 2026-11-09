@@ -54,7 +54,7 @@ app.patch('/api/monitors/:id/state', async (req,res) => {
   } catch(e) { if(connection) await connection.rollback().catch(()=>{});console.error(e);res.status(503).json({error:'Could not change monitor state.'}); }
   finally { if(connection) connection.release(); }
 });
-const aiRows=`SELECT d.id,d.id AS deal_id,d.source,d.url,d.title,d.price,d.description,d.item_condition,d.first_seen,d.last_seen,d.thumbnail IS NOT NULL AS has_image,m.id AS monitor_id,m.search_term,m.marketplaces,m.min_price,m.max_price,m.max_distance,m.sort_by,m.max_items,m.interval_seconds,m.filter_options,m.ai_prompt AS monitor_prompt,dm.ai_prompt AS item_prompt,r.fingerprint AS reviewed_fingerprint,r.verdict,r.reason,r.error AS ai_error FROM deals d JOIN deal_matches dm ON dm.deal_id=d.id JOIN monitors m ON m.id=dm.monitor_id LEFT JOIN ai_reviews r ON r.deal_id=d.id AND r.monitor_id=m.id`;
+const aiRows=`SELECT d.id,d.id AS deal_id,d.source,d.url,d.title,d.price,d.description,d.item_condition,d.listing_status,d.first_seen,d.last_seen,d.thumbnail IS NOT NULL AS has_image,m.id AS monitor_id,m.search_term,m.marketplaces,m.min_price,m.max_price,m.max_distance,m.sort_by,m.max_items,m.interval_seconds,m.filter_options,m.ai_prompt AS monitor_prompt,dm.ai_prompt AS item_prompt,r.fingerprint AS reviewed_fingerprint,r.verdict,r.reason,r.error AS ai_error FROM deals d JOIN deal_matches dm ON dm.deal_id=d.id JOIN monitors m ON m.id=dm.monitor_id LEFT JOIN ai_reviews r ON r.deal_id=d.id AND r.monitor_id=m.id`;
 function reviewed(row,settings){if(!dealFilters.matches(row,row.filter_options))return {status:'not_reviewed',reason:null,error:null};if(!settings.enabled || !settings.apiKey)return {status:'disabled',reason:null,error:null};let matches=false;try{matches=ai.matchesFingerprint(row,settings);}catch{}return {status:matches?(row.verdict || 'pending'):'pending',reason:matches?row.reason:null,error:matches?row.ai_error:null};}
 app.get('/api/deals/summary', async (req,res) => {try{const kind=req.query.kind==='items'?'items':'deals';const monitors=await pool.query('SELECT id FROM monitors');const rows=await pool.query(aiRows);const settings=ai.getSettings();const counts=new Map(monitors.map(m=>[m.id,0]));for(const row of rows)if(kind==='items'||(dealFilters.matches(row,row.filter_options)&&reviewed(row,settings).status==='deal'))counts.set(row.monitor_id,counts.get(row.monitor_id)+1);res.json([...counts].map(([id,deal_count])=>({id,deal_count})));}catch(e){console.error(e);res.status(503).json({error:'Could not load counts.'});}});
 app.get('/api/alerts', (req,res)=>res.json(alerts.publicSettings()));
@@ -88,14 +88,25 @@ app.delete('/api/deals', async (req,res) => {
   } catch(e) {if(connection)await connection.rollback().catch(()=>{});console.error(e);res.status(503).json({error:'Could not clear listings.'});}
   finally {if(connection)connection.release();}
 });
+app.put('/api/deals/:id/status',async(req,res)=>{
+  const {status,automatic}=req.body||{};
+  if(!/^\d+$/.test(req.params.id)||!['unmarked','messaged','refused','sold'].includes(status)||(automatic!==undefined&&typeof automatic!=='boolean')||(automatic&&status!=='messaged'))return res.status(400).json({error:'Invalid listing status.'});
+  try{
+    await pool.query(automatic?"UPDATE deals SET listing_status=IF(listing_status='unmarked',?,listing_status) WHERE id=?":'UPDATE deals SET listing_status=? WHERE id=?',[status,req.params.id]);
+    const rows=await pool.query('SELECT listing_status FROM deals WHERE id=?',[req.params.id]);
+    if(!rows.length)return res.status(404).json({error:'Listing not found.'});
+    res.json({status:rows[0].listing_status});
+  }catch(e){console.error(e);res.status(503).json({error:'Could not save listing status.'});}
+});
 app.get('/api/deals/:id/image', async(req,res)=>{if(!/^\d+$/.test(req.params.id))return res.sendStatus(400);try{const rows=await pool.query('SELECT thumbnail FROM deals WHERE id=? AND thumbnail IS NOT NULL',[req.params.id]);if(!rows.length)return res.sendStatus(404);res.type('image/jpeg').set('Cache-Control','private, max-age=86400').send(rows[0].thumbnail);}catch(e){res.sendStatus(503);}});
 app.get('/api/deals', async (req,res) => {
-  const monitor=req.query.monitor_id, source=req.query.source,kind=req.query.kind==='items'?'items':'deals';
+  const monitor=req.query.monitor_id, source=req.query.source, listingStatus=req.query.status,kind=req.query.kind==='items'?'items':'deals';
   if(monitor!==undefined && !/^\d+$/.test(monitor)) return res.status(400).json({error:'Invalid monitor ID.'});
   if(source!==undefined && !['facebook','kijiji','ebay'].includes(source)) return res.status(400).json({error:'Invalid source.'});
-  try {const where=[],values=[];if(monitor!==undefined){where.push('dm.monitor_id=?');values.push(monitor);}if(source!==undefined){where.push('d.source=?');values.push(source);}
+  if(listingStatus!==undefined && !['unmarked','messaged','refused','sold'].includes(listingStatus)) return res.status(400).json({error:'Invalid listing status.'});
+  try {const where=[],values=[];if(listingStatus!==undefined){where.push('d.listing_status=?');values.push(listingStatus);}if(monitor!==undefined){where.push('dm.monitor_id=?');values.push(monitor);}if(source!==undefined){where.push('d.source=?');values.push(source);}
     const rows=await pool.query(aiRows+(where.length?' WHERE '+where.join(' AND '):'')+' ORDER BY d.first_seen DESC,d.id DESC',values),settings=ai.getSettings(),unique=new Map();
-    for(const row of rows){const review=reviewed(row,settings);if(kind==='deals'&&(!dealFilters.matches(row,row.filter_options)||review.status!=='deal'))continue;if(!unique.has(row.id))unique.set(row.id,{id:row.id,source:row.source,url:row.source==='ebay'?row.url.replace(/^https:\/\/(?:www\.)?ebay\.com(?=\/|$)/i,'https://www.ebay.ca'):row.url,title:row.title,price:row.price,description:row.description,item_condition:row.item_condition,first_seen:row.first_seen,last_seen:row.last_seen,has_image:row.has_image,searches:row.search_term,ai_status:review.status,ai_reason:review.reason,ai_error:review.error,item_prompt:row.item_prompt||''});}
+    for(const row of rows){const review=reviewed(row,settings);if(kind==='deals'&&(!dealFilters.matches(row,row.filter_options)||review.status!=='deal'))continue;if(!unique.has(row.id))unique.set(row.id,{id:row.id,source:row.source,url:row.source==='ebay'?row.url.replace(/^https:\/\/(?:www\.)?ebay\.com(?=\/|$)/i,'https://www.ebay.ca'):row.url,title:row.title,price:row.price,description:row.description,item_condition:row.item_condition,listing_status:row.listing_status,first_seen:row.first_seen,last_seen:row.last_seen,has_image:row.has_image,searches:row.search_term,ai_status:review.status,ai_reason:review.reason,ai_error:review.error,item_prompt:row.item_prompt||''});}
     res.json([...unique.values()]);
   }catch(e){console.error(e);res.status(503).json({error:'Could not load listings.'});}
 });
