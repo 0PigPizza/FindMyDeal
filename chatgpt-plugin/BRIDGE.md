@@ -7,3 +7,5 @@ The host bridge is `scripts/chatgpt-instant-bridge.js` in the FindMyDeal reposit
 The relay is maintained as a separate Site source repository. Its `.openai/hosting.json` identifies that Site; use the Sites workflow and retain the same identity when publishing edits. The snapshot here documents the deployed relay alongside the host bridge.
 
 Queued searches remain available while the bridge is offline and resume after it reconnects, subject to the one-hour expiry. The bridge uses the search ID to reconnect to an existing Instant search after a restart. Update both the FindMyDeal app and the bridge script when upgrading. If the app itself restarts, an interrupted search may run again.
+
+Both ChatGPT search modes accept optional `additionalSettings` for price, distance, listing limit, sort order, filters, and AI review instructions. Explicit settings override AI-inferred choices. Search and result tools wait up to 25 seconds for completion by default; longer searches return a search ID so the next call can wait again. The wait is bounded by the tool request and does not guarantee a single call for long searches.
