@@ -12,12 +12,14 @@ module.exports=function(app,{worker,ai,profiles,getWorker}){
  let state={status:'idle'};
  app.get('/api/instant',(req,res)=>res.json(state));
  app.post('/api/instant',(req,res)=>{
-  const {searchTerm,aiRequest,marketplaces}=req.body||{};
+  const {searchTerm,aiRequest,marketplaces,requestId}=req.body||{};
+  if(requestId!==undefined&&(typeof requestId!=='string'||!/^[0-9a-f-]{36}$/.test(requestId)))return res.status(400).json({error:'Invalid request ID.'});
+  if(requestId&&state.requestId===requestId)return res.json(state);
   const aiMode=typeof aiRequest==='string'&&!!aiRequest.trim();
   if((aiMode?(aiRequest.trim().length>2000):(typeof searchTerm!=='string'||!searchTerm.trim()||searchTerm.trim().length>150))||!Array.isArray(marketplaces)||!marketplaces.length||new Set(marketplaces).size!==marketplaces.length||marketplaces.some(x=>!names[x]))return res.status(400).json({error:'Enter a valid search and choose at least one marketplace.'});
   if(['planning','searching','reviewing'].includes(state.status))return res.status(409).json({error:'An instant search is already running.'});
   const settings=ai.getSettings();if(aiMode&&(!settings.enabled||!settings.apiKey))return res.status(400).json({error:'Enable AI reviews and add an OpenRouter API key in AI to use an AI search.'});
-  state={status:aiMode?'planning':'searching',searchTerm:aiMode?'':searchTerm.trim(),items:[],errors:[],sources:marketplaces.map(name=>({name,status:'waiting',count:0})),review:{completed:0,total:0},analysisStatus:'waiting'};res.status(202).json(state);
+  state={...(requestId?{requestId}:{}),status:aiMode?'planning':'searching',searchTerm:aiMode?'':searchTerm.trim(),items:[],errors:[],sources:marketplaces.map(name=>({name,status:'waiting',count:0})),review:{completed:0,total:0},analysisStatus:'waiting'};res.status(202).json(state);
   const result=state;
   void run(result,marketplaces,aiMode?aiRequest.trim():'',settings).catch(e=>{result.errors.push(e.message);result.status='done';});
  });
