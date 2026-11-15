@@ -7,6 +7,24 @@ from facebook_search_test import WebDriver, RUNTIME, FIREFOX
 
 VISIBLE = "const visible=e=>!!(e.offsetWidth||e.offsetHeight||e.getClientRects().length);"
 
+def confirm_kijiji_conversation(driver, listing_url, listing_id, message):
+    """Recheck an uncertain submission without ever sending another message."""
+    try:
+        driver.navigate(listing_url)
+        link=driver.wait_for(VISIBLE+"""const id=arguments[0];
+          if (!location.pathname.split('/').filter(Boolean).includes(id)) return null;
+          const a=[...document.querySelectorAll('a[href]')].find(a=>visible(a)&&/open chat/i.test(a.innerText)&&a.hostname==='www.kijiji.ca'&&a.pathname.startsWith('/m-msg-my-messages/conversation/'));
+          return a?a.pathname:null;""",timeout=30,args=(listing_id,))
+        if not link: return False
+        driver.navigate('https://www.kijiji.ca'+link)
+        return bool(driver.wait_for(VISIBLE+r"""const id=arguments[0],message=arguments[1];
+          const normalize=s=>(s||'').replace(/\s+/g,' ').trim();
+          if (!location.pathname.startsWith('/m-msg-my-messages/conversation/'))return false;
+          const listing=[...document.querySelectorAll('a[href]')].some(a=>a.hostname==='www.kijiji.ca'&&a.pathname.split('/').filter(Boolean).includes(id));
+          return listing&&[...document.querySelectorAll('div,p,span')].some(e=>visible(e)&&e.children.length===0&&normalize(e.innerText)===normalize(message));""",timeout=30,args=(listing_id,message)))
+    except Exception:
+        return False
+
 def main():
     data=json.load(sys.stdin); source=data['source']; url=data['url']; message=data['message']
     parsed=urlparse(url)
@@ -77,7 +95,12 @@ def main():
             # Kijiji replaces the entire form after submission; do not inspect
             # the now-stale textarea. A newly appearing Open chat link confirms
             # that a conversation was created for this listing.
-            confirmation=driver.wait_for(VISIBLE+"return [...document.querySelectorAll('a')].some(a=>visible(a)&&/open chat/i.test(a.innerText)&&a.href.includes('/m-msg-my-messages/conversation/'));",timeout=15)
+            try:
+                confirmation=driver.wait_for(VISIBLE+"return [...document.querySelectorAll('a')].some(a=>visible(a)&&/open chat/i.test(a.innerText)&&a.href.includes('/m-msg-my-messages/conversation/'));",timeout=15)
+            except Exception:
+                confirmation=False
+            if not confirmation:
+                confirmation=confirm_kijiji_conversation(driver,url,listing_id,message)
         if not confirmation: raise RuntimeError('Delivery could not be confirmed. Check the marketplace before sending again.')
     finally:
         if driver.session:
