@@ -27,39 +27,58 @@ def main():
             except Exception: time.sleep(.1)
         caps={'capabilities':{'alwaysMatch':{'browserName':'firefox','moz:firefoxOptions':{'binary':str(FIREFOX),'args':['-headless','-profile',str(profile)]},'pageLoadStrategy':'none'}}}
         driver.session=driver.request('POST','/session',caps)['sessionId'];driver.navigate(url)
-        # Facebook can restore other conversations on a listing page. Only use a
-        # composer whose conversation contains a link to this exact listing.
+        listing_id=parsed.path.rstrip('/').split('/')[-1]
+        if not driver.wait_for("return document.readyState === 'complete' && location.pathname.split('/').filter(Boolean).includes(arguments[0]);",timeout=30,args=(listing_id,)):
+            raise RuntimeError('The requested listing did not load.')
         if source == 'facebook':
-            opener=driver.wait_for(VISIBLE+"return [...document.querySelectorAll('button,[role=button]')].find(e=>visible(e)&&/^message$/i.test((e.innerText||e.getAttribute('aria-label')||'').trim()))||null;",timeout=10)
-            if opener: driver.click(opener)
-            listing_id=parsed.path.strip('/').split('/')[-1]
-            composer_script=VISIBLE+"""const id=arguments[0];
-              for(const e of document.querySelectorAll('textarea,[contenteditable=true][role=textbox]')) {
-                if(!visible(e))continue; let p=e;
-                for(let i=0;p&&i<12;i++,p=p.parentElement) {
-                  const fields=[...p.querySelectorAll('textarea,[contenteditable=true][role=textbox]')].filter(visible);
-                  const links=[...p.querySelectorAll('a[href]')].filter(a=>a.href.includes('/marketplace/item/'+id));
-                  if(fields.length===1&&links.length)return e;
+            # New Marketplace listings expose an inline seller textarea, with a
+            # button labelled "Send message to <seller>". Never use a restored
+            # Messenger chat: it can belong to a different listing.
+            find_form=VISIBLE+"""for (const e of document.querySelectorAll('textarea')) {
+              if (!visible(e)) continue;
+              let p=e; for(let i=0;p&&i<12;i++,p=p.parentElement) {
+                const fields=[...p.querySelectorAll('textarea')].filter(visible);
+                const buttons=[...p.querySelectorAll('button,[role=button]')].filter(b=>visible(b)&&/^send message to .+/i.test(b.getAttribute('aria-label')||''));
+                if(fields.length===1&&buttons.length===1)return [e,buttons[0]];
+              }
+            } return null;"""
+            form=driver.wait_for(find_form,timeout=25)
+            if not form: raise RuntimeError('Could not identify this listing’s message box. Check the listing in Sources.')
+            driver.type_text(form[0],message)
+            # Reacquire after typing because React may replace the form.
+            form=driver.wait_for(find_form,timeout=10)
+            if not form: raise RuntimeError('Send button not found. Check the listing in Sources.')
+            driver.click(form[1])
+            # Confirm in the conversation for this listing, not in an unrelated
+            # restored chat or in the still-unsent textarea.
+            confirmation=driver.wait_for(VISIBLE+"""const id=arguments[0],message=arguments[1];
+              for(const a of document.querySelectorAll('a[href]')) {
+                if(!a.href.includes('/marketplace/item/'+id)) continue;
+                let p=a; for(let i=0;p&&i<12;i++,p=p.parentElement) {
+                  if(p.querySelectorAll('textarea,[contenteditable=true][role=textbox]').length>1) break;
+                  if(visible(p) && p.innerText.includes(message) && p.querySelector('[role=textbox],[contenteditable=true]'))return true;
                 }
-              } return null;"""
-            composer=driver.wait_for(composer_script,timeout=20,args=(listing_id,))
+              }return false;""",timeout=15,args=(listing_id,message))
         else:
-            opener=driver.wait_for(VISIBLE+"return [...document.querySelectorAll('button,[role=button]')].find(e=>visible(e)&&/^(message|contact seller|reply)$/i.test((e.innerText||e.getAttribute('aria-label')||'').trim()))||null;",timeout=10)
-            if opener: driver.click(opener)
-            composer=driver.wait_for(VISIBLE+"const items=[...document.querySelectorAll('textarea')].filter(visible);return items.length===1?items[0]:null;",timeout=20)
-        if not composer: raise RuntimeError('Could not identify this listing’s message box. Check the listing in Sources.')
-        driver.type_text(composer,message)
-        button=driver.wait_for(VISIBLE+"""const e=arguments[0]; let p=e;
-          for(let i=0;p&&i<12;i++,p=p.parentElement){
-            const fields=[...p.querySelectorAll('textarea,[contenteditable=true][role=textbox]')].filter(visible);
-            const buttons=[...p.querySelectorAll('button,[role=button]')].filter(b=>visible(b)&&/^(send|send message)$/i.test((b.innerText||b.getAttribute('aria-label')||'').trim())&&!b.disabled&&b.getAttribute('aria-disabled')!=='true');
-            if(fields.length===1&&buttons.length===1)return buttons[0];
-          }return null;""",timeout=10,args=(composer,))
-        if not button: raise RuntimeError('Send button not found. Check the listing in Sources.')
-        driver.click(button)
-        # An empty composer is evidence of submission; otherwise report an uncertain outcome.
-        sent=driver.wait_for("const e=arguments[0];return !(e.value||e.innerText||'').trim();",timeout=10,args=(composer,))
-        if not sent: raise RuntimeError('Delivery could not be confirmed. Check the marketplace before sending again.')
+            # Existing conversations are not initial messages and must not be
+            # contacted again. Wait for the asynchronous contact panel to load.
+            state=driver.wait_for(VISIBLE+"""if ([...document.querySelectorAll('a')].some(a=>visible(a)&&/open chat/i.test(a.innerText)))return 'existing';
+              const e=document.querySelector('textarea#message');return e&&visible(e)?'new':null;""",timeout=30)
+            if state=='new':
+                time.sleep(2)  # Allow the existing-conversation check to finish loading.
+                if driver.execute(VISIBLE+"return [...document.querySelectorAll('a')].some(a=>visible(a)&&/open chat/i.test(a.innerText));"): state='existing'
+            if state=='existing': raise RuntimeError('A conversation already exists for this listing. Check the marketplace.')
+            if state!='new': raise RuntimeError('Could not identify this listing’s message box. Check the listing in Sources.')
+            composer=driver.wait_for(VISIBLE+"const e=document.querySelector('textarea#message');return e&&visible(e)?e:null;",timeout=5)
+            driver.type_text(composer,message)
+            button=driver.wait_for(VISIBLE+"return [...document.querySelectorAll('button')].find(b=>visible(b)&&/^send message$/i.test(b.innerText.trim())&&!b.disabled)||null;",timeout=10)
+            if not button: raise RuntimeError('Send button not found. Check the listing in Sources.')
+            driver.click(button)
+            # Kijiji replaces the entire form after submission; do not inspect
+            # the now-stale textarea. A newly appearing Open chat link confirms
+            # that a conversation was created for this listing.
+            confirmation=driver.wait_for(VISIBLE+"return [...document.querySelectorAll('a')].some(a=>visible(a)&&/open chat/i.test(a.innerText)&&a.href.includes('/m-msg-my-messages/conversation/'));",timeout=15)
+        if not confirmation: raise RuntimeError('Delivery could not be confirmed. Check the marketplace before sending again.')
     finally:
         if driver.session:
             try: driver.request('DELETE',f'/session/{driver.session}')

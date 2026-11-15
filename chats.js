@@ -4,6 +4,8 @@ async function init(pool){
  await pool.query("ALTER TABLE monitors ADD COLUMN IF NOT EXISTS chat_message TEXT NULL");
  await pool.query(`CREATE TABLE IF NOT EXISTS chat_deliveries (deal_id INT UNSIGNED NOT NULL PRIMARY KEY, monitor_id INT UNSIGNED NULL, message TEXT NOT NULL, status VARCHAR(20) NOT NULL DEFAULT 'pending', error TEXT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, FOREIGN KEY (deal_id) REFERENCES deals(id) ON DELETE CASCADE, FOREIGN KEY (monitor_id) REFERENCES monitors(id) ON DELETE SET NULL)`);
  await pool.query("UPDATE chat_deliveries SET status='unknown',error='The app stopped during delivery. Check the marketplace before sending again.' WHERE status='sending'");
+ // This specific old Facebook failure happened before the send button was clicked.
+ await pool.query("UPDATE chat_deliveries c JOIN deals d ON d.id=c.deal_id SET c.status='pending',c.error=NULL WHERE c.status='unknown' AND d.source='facebook' AND c.error='Could not identify this listing’s message box. Check the listing in Sources.'");
 }
 async function enqueue(pool,row){
  if(!['facebook','kijiji'].includes(row.source))return;
